@@ -13,6 +13,10 @@
 //!   (browsers block `ws://` from secure pages); serve it over `http://` on a trusted network to
 //!   join from other machines.
 //!
+//! Framed by OneOS it talks to the ONE parent origin the frame page declared (`host`): the host sends the design to open and stores
+//! what Design saves as a new version (a Save as and an Export are copies), the file is a live document (`collab`, through the
+//! host's room, never FigCraft's own server) when the host says so, and the assistant's allow-listed runs arrive as `craft:command`.
+//!
 //! URL query flag: `?webgl` forces the WebGL2 backend instead of WebGPU.
 //!
 //! URL fragment: `#join=<invite link or join code>` joins that live session once the page has
@@ -24,6 +28,10 @@
 mod query;
 #[cfg(test)]
 mod query_tests;
+#[cfg(target_arch = "wasm32")]
+mod collab;
+#[cfg(target_arch = "wasm32")]
+mod host;
 #[cfg(target_arch = "wasm32")]
 mod web;
 

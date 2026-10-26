@@ -33,7 +33,7 @@ fn opening_a_file_lists_its_missing_fonts_and_not_the_installed_ones() {
         return;
     }
     let installed = figcraft_text::family_names().into_iter().next();
-    let mut families = vec!["FigCraft Missing UI"];
+    let mut families = vec!["Design Missing UI"];
     families.extend(installed.as_deref());
     let path = saved("open", &families);
     let mut u = Ui::new(Session::new());
@@ -46,7 +46,7 @@ fn opening_a_file_lists_its_missing_fonts_and_not_the_installed_ones() {
     u.app.run_user("file.open", json!({"path": path}));
     std::fs::remove_file(&path).unwrap();
     u.frame(vec![]);
-    assert_eq!(listed(&u), json!({"families": [{"family": "FigCraft Missing UI", "layers": 2}], "indexing": false}));
+    assert_eq!(listed(&u), json!({"families": [{"family": "Design Missing UI", "layers": 2}], "indexing": false}));
     u.frame(vec![]);
     let shown = u.frame_output(vec![]).shapes;
     assert!(crate::import_report_tests::shown_texts(shown).iter().any(|t| t == "2 text layers"));
@@ -82,7 +82,7 @@ fn it_waits_for_the_import_report_to_close() {
         eprintln!("skipped: system fonts opted out");
         return;
     }
-    let path = saved("report", &["FigCraft Missing Report"]);
+    let path = saved("report", &["Design Missing Report"]);
     let mut u = Ui::new(Session::new());
     u.app.run_user("file.open", json!({"path": path}));
     std::fs::remove_file(&path).unwrap();
@@ -94,7 +94,7 @@ fn it_waits_for_the_import_report_to_close() {
     assert_eq!(listed(&u), Value::Null, "the import report comes first");
     u.app.ui.import_report = None;
     u.frame(vec![]);
-    assert_eq!(listed(&u)["families"][0]["family"], "FigCraft Missing Report");
+    assert_eq!(listed(&u)["families"][0]["family"], "Design Missing Report");
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn text_menu_shows_the_window_for_the_file_in_front_even_with_nothing_missing() 
 #[test]
 fn asked_for_before_the_fonts_are_indexed_it_lists_them_once_they_are() {
     assert!(fonts_indexed());
-    let path = saved("indexing", &["FigCraft Missing Indexing"]);
+    let path = saved("indexing", &["Design Missing Indexing"]);
     let mut u = Ui::new(Session::new());
     u.app.run("file.open", json!({"path": path}));
     std::fs::remove_file(&path).unwrap();
@@ -123,19 +123,19 @@ fn asked_for_before_the_fonts_are_indexed_it_lists_them_once_they_are() {
     let uid = u.app.session.ds().unwrap().uid;
     u.app.ui.missing_fonts = Some(crate::missing_fonts::Shown { uid, families: Vec::new(), indexing: true });
     u.frame(vec![]);
-    assert_eq!(listed(&u), json!({"families": [{"family": "FigCraft Missing Indexing", "layers": 2}], "indexing": false}));
+    assert_eq!(listed(&u), json!({"families": [{"family": "Design Missing Indexing", "layers": 2}], "indexing": false}));
 }
 
 #[test]
 fn placing_images_or_clearing_recents_does_not_bring_it_back() {
     assert!(fonts_indexed());
-    let path = saved("place", &["FigCraft Missing Place"]);
+    let path = saved("place", &["Design Missing Place"]);
     let svg = std::env::temp_dir().join(format!("figcraft-missing-fonts-place-{}.svg", std::process::id()));
     std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#).unwrap();
     let mut u = Ui::new(Session::new());
     u.app.run_user("file.open", json!({"path": path}));
     u.frame(vec![]);
-    assert_eq!(listed(&u)["families"][0]["family"], "FigCraft Missing Place");
+    assert_eq!(listed(&u)["families"][0]["family"], "Design Missing Place");
     u.app.ui.missing_fonts = None;
     // A placed SVG, the same file opened again (it only comes to the front), Clear recent.
     assert!(u.app.run_user("file.import", json!({"path": svg.to_string_lossy()})).is_some());

@@ -1,4 +1,4 @@
-//! The browser shell: web `Services` and the eframe web runner.
+//! The browser shell: web `Services`, the eframe web runner, and (framed by OneOS) the host bridge and live editing.
 
 use figcraft_engine::Session;
 use figcraft_ui_egui::{ContentsFuture, FigApp, Services};
@@ -18,6 +18,10 @@ pub fn start() {
             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
             return;
         };
+        // OneOS host bridge: the frame page's loader declares the ONE parent origin this editor answers to
+        // (`globalThis.__craftHost`); with none declared the editor runs unframed and saves download.
+        let host = crate::host::Bridge::new();
+        let host_for_app = host.clone();
         let mut options = eframe::WebOptions::default();
         // `?webgl`: force the WebGL2 backend (troubleshooting, and headless browsers whose WebGPU
         // adapter request returns nothing).
@@ -30,31 +34,50 @@ pub fn start() {
             .start(
                 canvas,
                 options,
-                Box::new(|cc| {
+                Box::new(move |cc| {
                     if let Some(rs) = &cc.wgpu_render_state {
                         log::info!("figcraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                     }
                     let reduce_motion = web_sys::window().and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
-                    let mut session = Session::new();
-                    // Live sessions: the browser joins sessions a desktop app hosts; whatever arrives
-                    // on the socket wakes the page for a frame.
-                    let ctx = cc.egui_ctx.clone();
-                    session.live.install(Box::new(figcraft_collab_net::NetLink::new(std::sync::Arc::new(move || ctx.request_repaint()))));
-                    let mut fig = FigApp::new(session, Box::new(WebServices { reduce_motion, ctx: cc.egui_ctx.clone() }));
+                    let bridge = host_for_app.clone();
+                    // Framed by OneOS the host sends the file: until it does, the home screen.
+                    let mut session = if bridge.is_some() { Session::empty() } else { Session::new() };
+                    if bridge.is_none() {
+                        // Live sessions: the browser joins sessions a desktop app hosts; whatever arrives
+                        // on the socket wakes the page for a frame. (Framed by OneOS, live editing is the host's room, never
+                        // FigCraft's own server.)
+                        let ctx = cc.egui_ctx.clone();
+                        session.live.install(Box::new(figcraft_collab_net::NetLink::new(std::sync::Arc::new(move || ctx.request_repaint()))));
+                    }
+                    if let Some(b) = &bridge {
+                        b.connect(cc.egui_ctx.clone());
+                    }
+                    let mut fig = FigApp::new(session, Box::new(WebServices { reduce_motion, ctx: cc.egui_ctx.clone(), hosted: bridge.is_some() }));
                     // `#join=<link>`: join that session, as opening an invite link does on the desktop.
                     let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
-                    if let Some(link) = crate::query::join_link(&hash) {
+                    if bridge.is_none()
+                        && let Some(link) = crate::query::join_link(&hash)
+                    {
                         let link = js_sys::decode_uri_component(link).ok().and_then(|s| s.as_string()).unwrap_or_else(|| link.to_string());
                         figcraft_ui_egui::live::open_invite(&mut fig, &link);
                     }
-                    Ok(Box::new(WebShell { fig }))
+                    let collab = bridge.clone().map(crate::collab::Collab::new);
+                    if let Some(b) = &bridge {
+                        b.post_ready();
+                    }
+                    Ok(Box::new(WebShell { fig, bridge, collab, reported: (String::new(), None) }))
                 }),
             )
             .await;
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
-                Err(e) => el.set_inner_html(&format!("<p>FigCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
+                Err(e) => {
+                    if let Some(b) = &host {
+                        b.post_failed(&format!("{e:?}"));
+                    }
+                    el.set_inner_html(&format!("<p>Design failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>"))
+                }
             }
         }
     });
@@ -66,12 +89,98 @@ fn query() -> String {
 
 struct WebShell {
     fig: FigApp,
+    /// OneOS host bridge, when framed by it.
+    bridge: Option<crate::host::Bridge>,
+    /// Live editing through the host (`collab`), when framed by it.
+    collab: Option<crate::collab::Collab>,
+    /// The last (session, dirty) the host was told: a new open starts again.
+    reported: (String, Option<bool>),
 }
 
 impl eframe::App for WebShell {
     // `FigApp::ui` runs its own per-frame logic first (fonts, theme), like the desktop app.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.host_events(ui.ctx());
         self.fig.ui(ui);
+        self.after_frame();
+    }
+}
+
+impl WebShell {
+    /// What the host said since the last frame: files to open, the live channel, the assistant's runs.
+    fn host_events(&mut self, ctx: &egui::Context) {
+        let Some(bridge) = self.bridge.clone() else { return };
+        for event in bridge.take_events() {
+            match event {
+                crate::host::Event::Opened(opened, bytes) => self.open_host_file(&opened, &bytes),
+                crate::host::Event::Command { id, method, params } => {
+                    let outcome = if method == "command.batch" {
+                        if bridge.opened().read_only {
+                            Err("read-only: this design is open to view, so a run cannot change it".to_string())
+                        } else {
+                            self.fig.session.run_command_batch(&params)
+                        }
+                    } else {
+                        Err(format!("unknown-method: this editor does not take `{method}`"))
+                    };
+                    bridge.answer(&id, outcome);
+                }
+                other => {
+                    if let Some(collab) = self.collab.as_mut() {
+                        collab.event(other, &mut self.fig);
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// The host's file becomes the document in front, saved under its own name (a Save is a new version of it).
+    fn open_host_file(&mut self, opened: &crate::host::Opened, bytes: &[u8]) {
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let session = &mut self.fig.session;
+        // The file that was open before is the host's no longer.
+        session.collab_undo = false;
+        session.collab_undo_requests.clear();
+        let params = serde_json::json!({"data": data, "name": opened.name});
+        match session.execute("file.open", &params) {
+            Ok(_) => {
+                if let Err(e) = session.bind_host_name(None, &opened.name) {
+                    log::error!("{e}");
+                }
+                self.fig.ui.home = false;
+                if let Some(collab) = self.collab.as_mut() {
+                    collab.opened(opened, &mut self.fig.session);
+                }
+            }
+            Err(e) => {
+                log::error!("the host's file did not open: {e}");
+                if let Some(b) = &self.bridge {
+                    b.post_failed(&format!("{} did not open: {e}", opened.name));
+                }
+                self.fig.toast(e.to_string());
+            }
+        }
+    }
+
+    /// After the app's own pass: this frame's edits go to the room, and unsaved changes (or none) to the host.
+    fn after_frame(&mut self) {
+        let Some(bridge) = self.bridge.clone() else { return };
+        if let Some(collab) = self.collab.as_mut() {
+            collab.post(&mut self.fig);
+        }
+        let session = bridge.opened().session;
+        if session.is_empty() {
+            return;
+        }
+        if self.reported.0 != session {
+            self.reported = (session.clone(), None);
+        }
+        let dirty = self.fig.session.host_dirty();
+        if self.reported.1 != Some(dirty) && bridge.post_dirty(dirty) {
+            self.reported.1 = Some(dirty);
+        }
     }
 }
 
@@ -83,6 +192,8 @@ struct WebServices {
     /// `prefers-reduced-motion: reduce` (it follows the setting while the page is open).
     reduce_motion: Option<web_sys::MediaQueryList>,
     ctx: egui::Context,
+    /// Framed by OneOS: a Save as and an Export go to the host (a copy), not to a download.
+    hosted: bool,
 }
 
 impl Services for WebServices {
@@ -95,6 +206,11 @@ impl Services for WebServices {
                 None
             })
         }))
+    }
+    /// Framed by OneOS the host takes the file: a copy under the name the person gave (never a new version of the opened file).
+    fn pick_save(&mut self, _title: &str, name: &str, _exts: &[&str]) -> figcraft_ui_egui::DialogFuture {
+        let chosen = self.hosted.then(|| std::path::PathBuf::from(name));
+        Box::pin(std::future::ready(chosen))
     }
     fn downloads(&self) -> bool {
         true

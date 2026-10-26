@@ -13,6 +13,7 @@ figcraft-geom = { workspace = true }
 figcraft-color = { workspace = true }
 figcraft-doc = { workspace = true }
 figcraft-collab = { workspace = true }
+figcraft-host-collab = { workspace = true }
 figcraft-layout = { workspace = true }
 figcraft-text = { workspace = true }
 figcraft-pathops = { workspace = true }

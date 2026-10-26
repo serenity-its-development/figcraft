@@ -42,7 +42,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "file.open",
             "Open",
-            "{path | data (base64) + name (tells the format; opens as a new unsaved document), variables? (REST: the local variables JSON as an object, JSON text or a path; default `<name>.variables.json` or `variables.json` next to the file)} (.figcraft, .json: FigCraft or REST API file JSON, .fig (best effort), .svg, .png, .jpg …); REST and .fig imports return `warnings`; a file opened anew returns `summary` {name, pages, layers, images} (one that was already open just returns its `index`)",
+            "{path | data (base64) + name (tells the format; opens as a new unsaved document), variables? (REST: the local variables JSON as an object, JSON text or a path; default `<name>.variables.json` or `variables.json` next to the file)} (.figcraft, .json: Design or REST API file JSON, .fig (best effort), .svg, .png, .jpg …); REST and .fig imports return `warnings`; a file opened anew returns `summary` {name, pages, layers, images} (one that was already open just returns its `index`)",
             false,
             open
         ),
@@ -483,8 +483,13 @@ pub(crate) fn write(path: &str, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn write(path: &str, _bytes: &[u8]) -> Result<()> {
-    Err(EngineError::Other(format!("{path}: no file system in the browser")))
+pub(crate) fn write(path: &str, bytes: &[u8]) -> Result<()> {
+    // Framed by OneOS the host takes the bytes (see `host_sink`); on its own the page has no file system.
+    match crate::host_sink::offer(path, bytes) {
+        Some(Ok(())) => Ok(()),
+        Some(Err(why)) => Err(EngineError::Other(format!("{path}: {why}"))),
+        None => Err(EngineError::Other(format!("{path}: no file system in the browser"))),
+    }
 }
 
 fn ext(path: &str) -> String {

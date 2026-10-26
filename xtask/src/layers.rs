@@ -13,6 +13,7 @@ const TABLE: &[(&str, u8)] = &[
     ("text", 2),
     ("pathops", 2),
     ("collab", 2),
+    ("host-collab", 3),
     ("plugin", 2),
     ("render", 3),
     ("format", 3),

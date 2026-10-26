@@ -35,6 +35,9 @@ pub mod file_access;
 pub mod fonts;
 pub mod guard;
 pub mod guides;
+pub mod host_commands;
+pub mod host_live;
+pub mod host_sink;
 pub mod inspect;
 pub mod invite_links;
 pub mod keymap;
@@ -809,6 +812,11 @@ pub struct Session {
     pub live: live::Lives,
     /// Commands the UI runs without waiting on a server ([`Session::start_background`]).
     pub background: background::Background,
+    /// OneOS host bridge, live editing: Undo and Redo are the room's, not this session's snapshots (which would also take back
+    /// what other people did). While set, [`Session::undo`] and [`Session::redo`] queue a request in
+    /// [`collab_undo_requests`](Self::collab_undo_requests) (`true`: undo) and change nothing.
+    pub collab_undo: bool,
+    pub collab_undo_requests: Vec<bool>,
 }
 
 impl Default for Session {
@@ -856,6 +864,8 @@ impl Session {
             plugins: plugins::Runtime::default(),
             live: live::Lives::default(),
             background: background::Background::default(),
+            collab_undo: false,
+            collab_undo_requests: Vec::new(),
         }
     }
 
@@ -1188,6 +1198,10 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Result<bool> {
+        if self.collab_undo {
+            self.collab_undo_requests.push(true);
+            return Ok(true);
+        }
         textpreview::end(self);
         let live = self.ds().is_ok_and(|d| self.live_doc(d.uid));
         let ds = self.ds_mut()?;
@@ -1225,6 +1239,10 @@ impl Session {
     }
 
     pub fn redo(&mut self) -> Result<bool> {
+        if self.collab_undo {
+            self.collab_undo_requests.push(false);
+            return Ok(true);
+        }
         textpreview::end(self);
         let live = self.ds().is_ok_and(|d| self.live_doc(d.uid));
         let ds = self.ds_mut()?;

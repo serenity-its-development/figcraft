@@ -104,6 +104,6 @@ fn the_browser_joins_but_does_not_host() {
     assert!(has_text(&shapes, "Join with a code") && has_text(&shapes, "Join"));
     assert!(has_text(
         &shapes,
-        "In the browser you can join sessions the desktop app hosts and files on a FigCraft server. A page opened over https reaches other computers only through wss:// links (a server behind TLS)."
+        "In the browser you can join sessions the desktop app hosts and files on a Design server. A page opened over https reaches other computers only through wss:// links (a server behind TLS)."
     ));
 }

@@ -1543,6 +1543,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "figcraft-collab-node"
+version = "0.10.0"
+dependencies = [
+ "base64 0.22.1",
+ "figcraft-engine",
+ "figcraft-host-collab",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "figcraft-color"
 version = "0.10.0"
 dependencies = [
@@ -1574,6 +1585,7 @@ dependencies = [
  "figcraft-doc",
  "figcraft-format",
  "figcraft-geom",
+ "figcraft-host-collab",
  "figcraft-layout",
  "figcraft-pathops",
  "figcraft-pdf",
@@ -1612,6 +1624,18 @@ version = "0.10.0"
 dependencies = [
  "kurbo",
  "serde",
+]
+
+[[package]]
+name = "figcraft-host-collab"
+version = "0.10.0"
+dependencies = [
+ "figcraft-collab",
+ "figcraft-color",
+ "figcraft-doc",
+ "figcraft-geom",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1779,13 +1803,16 @@ dependencies = [
 name = "figcraft-web"
 version = "0.10.0"
 dependencies = [
+ "base64 0.22.1",
  "eframe",
  "egui",
  "figcraft-collab-net",
  "figcraft-engine",
+ "figcraft-host-collab",
  "figcraft-ui-egui",
  "js-sys",
  "log",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
