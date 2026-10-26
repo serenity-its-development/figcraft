@@ -10,10 +10,14 @@
 //! Order each frame: the host's messages first (before a remote change is shown, the person's own edits since the last frame go
 //! out, so none is overwritten); then the app's own pass; then any edit this frame made is sent.
 
+use std::collections::BTreeMap;
+
 use figcraft_engine::Session;
 use figcraft_engine::host_live::HostLive;
 use figcraft_host_collab::{Batch, changes_of};
 use serde_json::{Value, json};
+
+use figcraft_ui_egui::FigApp;
 
 use crate::host::{Bridge, Event, Opened};
 
@@ -27,12 +31,34 @@ enum Phase {
     Live,
 }
 
+/// Another person in the room: their name, colour and last cursor body (resolved against the design every frame).
+struct Peer {
+    name: String,
+    color: [u8; 3],
+    cursor: Value,
+}
+
+/// My pointer and selection go out when they move (at most this often) and again this often while they stay, so the others' copy of
+/// them does not expire (the host drops a cursor 6 s after its last frame).
+const CURSOR_MIN_MS: u64 = 80;
+const CURSOR_REPEAT_MS: u64 = 3_000;
+
+/// `#rrggbb` as colour bytes.
+fn rgb_of(s: &str) -> [u8; 3] {
+    let h = s.trim_start_matches('#');
+    let byte = |i: usize| h.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok()).unwrap_or(0x7c);
+    if h.len() == 6 { [byte(0), byte(2), byte(4)] } else { [0x7c, 0x3a, 0xed] }
+}
+
 pub struct Collab {
     bridge: Bridge,
     live: Option<HostLive>,
     phase: Phase,
     /// The last flush was part of a drag or a typing burst: the next edit folds into the same undo step.
     gesture: bool,
+    peers: BTreeMap<String, Peer>,
+    last_cursor: Option<Value>,
+    last_cursor_ms: u64,
 }
 
 fn now_ms() -> u64 {
@@ -50,13 +76,17 @@ fn random_client() -> u32 {
 
 impl Collab {
     pub fn new(bridge: Bridge) -> Self {
-        Collab { bridge, live: None, phase: Phase::Off, gesture: false }
+        Collab { bridge, live: None, phase: Phase::Off, gesture: false, peers: BTreeMap::new(), last_cursor: None, last_cursor_ms: 0 }
     }
 
     /// A `craft:open` arrived and the file is open in the session as its active document.
     pub fn opened(&mut self, o: &Opened, session: &mut Session) {
         self.live = None;
         self.gesture = false;
+        self.peers.clear();
+        self.last_cursor = None;
+        session.room_peers.clear();
+        session.room_pointer = None;
         session.collab_undo = false;
         session.collab_undo_requests.clear();
         self.phase = Phase::Off;
@@ -72,7 +102,7 @@ impl Collab {
         }
     }
 
-    fn off(&mut self, app: &mut figcraft_ui_egui::FigApp, why: &str) {
+    fn off(&mut self, app: &mut FigApp, why: &str) {
         self.phase = Phase::Off;
         if let Some(live) = self.live.take() {
             live.end(&mut app.session);
@@ -91,7 +121,7 @@ impl Collab {
     }
 
     /// Send what the person changed since the last frame.
-    fn flush_local(&mut self, app: &mut figcraft_ui_egui::FigApp) {
+    fn flush_local(&mut self, app: &mut FigApp) {
         if self.phase != Phase::Live {
             return;
         }
@@ -101,7 +131,7 @@ impl Collab {
         }
         let in_gesture = app.session.docs.iter().any(|d| d.interaction.is_some() || d.text_edit.is_some());
         let label = app.session.undo_labels(1).into_iter().next().unwrap_or_else(|| "Edit".to_string());
-        match live.flush(&app.session, &label, self.gesture, now_ms()) {
+        match live.flush(&mut app.session, &label, self.gesture, now_ms()) {
             Ok(batches) => {
                 self.gesture = in_gesture;
                 self.post_batches(&batches);
@@ -111,7 +141,7 @@ impl Collab {
     }
 
     /// The host sent something for the live channel.
-    pub fn event(&mut self, ev: Event, app: &mut figcraft_ui_egui::FigApp) {
+    pub fn event(&mut self, ev: Event, app: &mut FigApp) {
         match ev {
             Event::Refused { code, reason } => app.toast(if code.is_empty() { reason } else { format!("{reason} ({code})") }),
             Event::Crdt { kind, body } => self.handle(app, &kind, &body),
@@ -119,7 +149,7 @@ impl Collab {
         }
     }
 
-    fn handle(&mut self, app: &mut figcraft_ui_egui::FigApp, kind: &str, body: &Value) {
+    fn handle(&mut self, app: &mut FigApp, kind: &str, body: &Value) {
         if self.live.is_none() {
             return;
         }
@@ -186,6 +216,19 @@ impl Collab {
                     Err(e) => app.toast(format!("The checkpoint could not be made: {e}")),
                 }
             }
+            "peer" => {
+                let Some(party) = body.get("party").and_then(Value::as_str) else { return };
+                match body.get("cursor") {
+                    Some(c) if !c.is_null() => {
+                        let name = body.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or("Someone").to_owned();
+                        let color = rgb_of(body.get("color").and_then(Value::as_str).unwrap_or("#7c3aed"));
+                        self.peers.insert(party.to_owned(), Peer { name, color, cursor: c.clone() });
+                    }
+                    _ => {
+                        self.peers.remove(party);
+                    }
+                }
+            }
             "unplaced" => app.toast("Some of your offline edits could not be placed in the live design."),
             _ => {}
         }
@@ -196,15 +239,42 @@ impl Collab {
     }
 
     /// Edits a remote change made go out first, so they are posted right after the change.
-    fn post_held(&mut self, app: &mut figcraft_ui_egui::FigApp) {
+    fn post_held(&mut self, app: &mut FigApp) {
         self.flush_local(app);
     }
 
     /// Once per frame AFTER the app's own pass.
-    pub fn post(&mut self, app: &mut figcraft_ui_egui::FigApp) {
+    pub fn post(&mut self, app: &mut FigApp) {
         self.flush_local(app);
         for undo in std::mem::take(&mut app.session.collab_undo_requests) {
             self.bridge.post_crdt(if undo { "undo" } else { "redo" }, &json!({}));
+        }
+        if self.phase == Phase::Live {
+            self.share_cursor(app);
+            self.show_peers(app);
+        }
+    }
+
+    /// Say where my pointer and selection are: when they move, and now and then while they stay.
+    fn share_cursor(&mut self, app: &FigApp) {
+        let now = now_ms();
+        let Some(body) = self.live.as_ref().and_then(|l| l.cursor_body(&app.session)) else { return };
+        let moved = self.last_cursor.as_ref() != Some(&body);
+        let due = if moved { now.saturating_sub(self.last_cursor_ms) >= CURSOR_MIN_MS } else { now.saturating_sub(self.last_cursor_ms) >= CURSOR_REPEAT_MS };
+        if !due {
+            return;
+        }
+        self.bridge.post_crdt("cursor", &json!({"cursor": body}));
+        self.last_cursor = Some(body);
+        self.last_cursor_ms = now;
+    }
+
+    /// The other people, resolved against the design as it is now.
+    fn show_peers(&mut self, app: &mut FigApp) {
+        let Some(live) = self.live.as_ref() else { return };
+        let peers: Vec<_> = self.peers.values().filter_map(|p| live.peer(&app.session, &p.name, p.color, &p.cursor)).collect();
+        if peers != app.session.room_peers {
+            app.session.room_peers = peers;
         }
     }
 }

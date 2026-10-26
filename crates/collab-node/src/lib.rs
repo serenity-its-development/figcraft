@@ -67,7 +67,7 @@ impl Window {
     /// The person edited the design: answers the batches to send.
     pub fn flush(&mut self, now: f64) -> Result<String, JsError> {
         let label = self.session.undo_labels(1).into_iter().next().unwrap_or_else(|| "Edit".to_string());
-        Ok(batches_json(&self.live.flush(&self.session, &label, false, now as u64).map_err(err)?))
+        Ok(batches_json(&self.live.flush(&mut self.session, &label, false, now as u64).map_err(err)?))
     }
 
     /// The host sent `craft:crdt:state`: `doc_json` is its `doc`, `comments_json` its `comments` (unused: comments are entries).
@@ -107,6 +107,27 @@ impl Window {
     pub fn digest(&self) -> Result<String, JsError> {
         let ds = self.session.ds().map_err(err)?;
         Ok(digest(&ds.doc).map_err(err)?.to_string())
+    }
+
+    /// The `craft:crdt:cursor` body for this person's selection (`ids_json`: layer ids) and pointer at (`x`, `y`) on the page shown.
+    pub fn cursor(&mut self, x: f64, y: f64, ids_json: &str) -> Result<String, JsError> {
+        let ids: Vec<u64> = serde_json::from_str(ids_json).map_err(|e| JsError::new(&format!("ids: {e}")))?;
+        self.session.ds_mut().map_err(err)?.selection = ids.into_iter().map(figcraft_engine::doc::NodeId).collect();
+        self.session.room_pointer = Some((x, y));
+        Ok(self.live.cursor_body(&self.session).map(|v| v.to_string()).unwrap_or_default())
+    }
+
+    /// Where another person is, in this window: `{name, color, page, x, y, selection}` as JSON, or an empty string. The host stamps
+    /// the name and colour per party; the test passes them.
+    pub fn peer(&self, name: &str, cursor_json: &str) -> String {
+        let Ok(v) = serde_json::from_str::<Value>(cursor_json) else { return String::new() };
+        match self.live.peer(&self.session, name, [0x7c, 0x3a, 0xed], &v) {
+            Some(p) => {
+                let at = p.at.map(|(x, y)| json!({"x": x, "y": y}));
+                json!({"name": p.name, "color": p.color, "page": p.page.0, "at": at, "selection": p.selection.iter().map(|n| n.0).collect::<Vec<_>>()}).to_string()
+            }
+            None => String::new(),
+        }
     }
 
     /// Changes the shim could not apply (0 in a healthy room).

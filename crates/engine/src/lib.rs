@@ -817,6 +817,10 @@ pub struct Session {
     /// [`collab_undo_requests`](Self::collab_undo_requests) (`true`: undo) and change nothing.
     pub collab_undo: bool,
     pub collab_undo_requests: Vec<bool>,
+    /// OneOS live editing: the other people in the room, from the host's presence (drawn on the canvas), and where this person's
+    /// pointer is over the canvas (page coordinates, set by the window) for the caller to send.
+    pub room_peers: Vec<host_live::RoomPeer>,
+    pub room_pointer: Option<(f64, f64)>,
 }
 
 impl Default for Session {
@@ -866,6 +870,8 @@ impl Session {
             background: background::Background::default(),
             collab_undo: false,
             collab_undo_requests: Vec::new(),
+            room_peers: Vec::new(),
+            room_pointer: None,
         }
     }
 

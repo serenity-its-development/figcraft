@@ -112,6 +112,13 @@ macro_rules! node_props {
                 }
             }
 
+            /// What field property `self` holds on a new node of type `kind` (a created node carries only the properties that differ
+            /// from it, so a property nobody wrote is this).
+            pub fn default_for(self, kind: &Json) -> Result<Json, Error> {
+                let kind: figcraft_doc::NodeKind = kind.read("kind")?;
+                self.get(&Node::new(NodeId(0), kind, "", 0.0, 0.0))
+            }
+
             /// Field property `self` of `n`.
             pub(crate) fn get(self, n: &Node) -> Result<Json, Error> {
                 match self {

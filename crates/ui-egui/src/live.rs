@@ -123,6 +123,10 @@ pub struct LiveUi {
     focus_report: bool,
     /// Others' chat messages as last seen, with when they changed (UI clock): they fade from then.
     chat_seen: BTreeMap<u32, (String, f64)>,
+    /// Where each person of the OneOS room has their pointer drawn (page coordinates), gliding to where it was reported.
+    room_shown: BTreeMap<usize, (f64, f64)>,
+    /// The UI clock at the last frame the room's pointers were drawn.
+    room_last: f64,
     /// Your cursor chat (open when `Some`).
     pub chat: Option<ChatBox>,
 }
@@ -321,6 +325,68 @@ pub fn draw(app: &mut FigApp, painter: &egui::Painter, ctx: &egui::Context) {
         }
     }
     app.ui.live.shown = shown;
+    if gliding {
+        ctx.request_repaint();
+    }
+}
+
+/// OneOS live editing: hand the pointer's page position to the session, for the window to send to the room. Cleared when the pointer
+/// leaves the canvas, so the others' copy of it goes.
+pub fn track_room_pointer(app: &mut FigApp, ctx: &egui::Context) {
+    if !app.session.collab_undo {
+        app.session.room_pointer = None;
+        return;
+    }
+    let at = ctx.input(|i| i.pointer.hover_pos()).filter(|p| app.canvas.rect.contains(*p)).map(|p| app.to_page(p)).map(|p| (p.x, p.y));
+    if at != app.session.room_pointer {
+        app.session.room_pointer = at;
+    }
+}
+
+/// The people in the OneOS room, on the canvas: an outline round each layer they have selected and their pointer with a name tag, in
+/// the colour the host stamped them with. Only what is on the page you are looking at.
+pub fn draw_room(app: &mut FigApp, painter: &egui::Painter, ctx: &egui::Context) {
+    if app.session.room_peers.is_empty() {
+        app.ui.live.room_shown.clear();
+        return;
+    }
+    let Ok(ds) = app.session.ds() else { return };
+    let (doc, page, zoom) = (ds.doc.clone(), ds.page, ds.view.zoom.max(1e-9));
+    let show_pointers = ds.view.multiplayer_cursors;
+    let now = ctx.input(|i| i.time);
+    let dt = (now - app.ui.live.room_last).clamp(0.0, 0.1);
+    app.ui.live.room_last = now;
+    let reduce = app.reduce_motion();
+    let k = if reduce { 1.0 } else { 1.0 - (-dt * GLIDE).exp() };
+    let mut shown = BTreeMap::new();
+    let mut gliding = false;
+    let peers = app.session.room_peers.clone();
+    for (i, p) in peers.iter().enumerate() {
+        if p.page != page {
+            continue;
+        }
+        let [r, g, b] = p.color;
+        let fill = Color32::from_rgb(r, g, b);
+        for n in p.selection.iter().filter(|n| doc.page_of(**n) == Some(page)).take(MAX_OUTLINES) {
+            if let Some(q) = crate::canvas::node_quad(app, &doc, *n) {
+                painter.add(Shape::closed_line(q.to_vec(), Stroke::new(1.5, fill)));
+            }
+        }
+        let Some((x, y)) = p.at.filter(|_| show_pointers) else { continue };
+        let (mut sx, mut sy) = app.ui.live.room_shown.get(&i).copied().unwrap_or((x, y));
+        sx += (x - sx) * k;
+        sy += (y - sy) * k;
+        if ((x - sx) * zoom).hypot((y - sy) * zoom) < 0.5 {
+            (sx, sy) = (x, y);
+        } else {
+            gliding = true;
+        }
+        shown.insert(i, (sx, sy));
+        let tip = app.to_screen(sx, sy);
+        pointer(painter, tip, fill);
+        name_tag(painter, tip + vec2(12.0, 16.0), Align2::LEFT_TOP, &p.name, fill);
+    }
+    app.ui.live.room_shown = shown;
     if gliding {
         ctx.request_repaint();
     }

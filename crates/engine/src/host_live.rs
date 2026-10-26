@@ -9,10 +9,22 @@
 
 use std::sync::Arc;
 
-use figcraft_host_collab::{Batch, HostChange, Shim};
+use figcraft_doc::NodeId;
+use figcraft_host_collab::{Batch, HostChange, Shim, cursor_for, peer_cursor};
 use serde_json::Value;
 
 use crate::Session;
+
+/// Another person in the room, as the window draws them: their name and colour (the host stamps both per party), the page they are
+/// on, their pointer and the layers they have selected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoomPeer {
+    pub name: String,
+    pub color: [u8; 3],
+    pub page: NodeId,
+    pub at: Option<(f64, f64)>,
+    pub selection: Vec<NodeId>,
+}
 
 /// One window's live document.
 pub struct HostLive {
@@ -55,6 +67,22 @@ impl HostLive {
         session.docs.iter().find(|d| d.uid == self.uid).map(|d| d.doc.clone()).ok_or_else(|| "the shared document was closed".to_string())
     }
 
+    /// The body of a `craft:crdt:cursor` message for where this person is: the page shown, the pointer over the canvas (page
+    /// coordinates) and the selected layers.
+    #[must_use]
+    pub fn cursor_body(&self, session: &Session) -> Option<Value> {
+        let ds = session.docs.iter().find(|d| d.uid == self.uid)?;
+        Some(cursor_for(ds.page, session.room_pointer, &ds.selection))
+    }
+
+    /// Another person's cursor body (from `craft:crdt:peer`) resolved against this window's design.
+    #[must_use]
+    pub fn peer(&self, session: &Session, name: &str, color: [u8; 3], cursor: &Value) -> Option<RoomPeer> {
+        let ds = session.docs.iter().find(|d| d.uid == self.uid)?;
+        let c = peer_cursor(&ds.doc, cursor)?;
+        Some(RoomPeer { name: name.to_owned(), color, page: c.page, at: c.at, selection: c.selection })
+    }
+
     /// The room is empty: the document as ops (the first batch is the seed).
     pub fn seed(&mut self, session: &mut Session, now_ms: u64) -> Result<Vec<Batch>, String> {
         let doc = self.doc(session)?;
@@ -65,10 +93,14 @@ impl HostLive {
 
     /// The person's edits since the last call as batches to send (`join`: a gesture or typing burst continues, so the edit folds
     /// into the previous undo step); includes any a remote change made go out first.
-    pub fn flush(&mut self, session: &Session, label: &str, join: bool, now_ms: u64) -> Result<Vec<Batch>, String> {
+    pub fn flush(&mut self, session: &mut Session, label: &str, join: bool, now_ms: u64) -> Result<Vec<Batch>, String> {
         let doc = self.doc(session)?;
         let mut out = std::mem::take(&mut self.held);
         out.extend(self.shim.local(&doc, label, join, now_ms).map_err(|e| e.to_string())?);
+        // The cycle rule may have moved a layer because of this edit: the design the room says is shown.
+        if self.shim.take_reshown() {
+            self.install(session);
+        }
         Ok(out)
     }
 
@@ -87,10 +119,11 @@ impl HostLive {
         self.send_own_first(session, now_ms)?;
         let doc = self.doc(session)?;
         let changed = self.shim.remote_delta(changes, ack, now_ms, &doc).map_err(|e| e.to_string())?;
-        if changed {
+        let reshown = self.shim.take_reshown();
+        if changed || reshown {
             self.install(session);
         }
-        Ok(changed)
+        Ok(changed || reshown)
     }
 
     /// Edits made since the last flush are sent before a remote change is shown; the batches wait in `held` for the caller.
