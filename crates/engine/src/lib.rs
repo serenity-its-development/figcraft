@@ -33,6 +33,7 @@ pub mod distance;
 pub mod doc_urls;
 pub mod drop;
 pub mod file_access;
+pub mod first_view;
 pub mod fonts;
 pub mod guard;
 pub mod guides;

@@ -65,7 +65,8 @@ pub fn start() {
                     if let Some(b) = &bridge {
                         b.post_ready();
                     }
-                    Ok(Box::new(WebShell { fig, bridge, collab, reported: (String::new(), None), reported_select: None }))
+                    let handoff = bridge.clone().map(|bridge| (bridge, crate::handoff::Handoff::new()));
+                    Ok(Box::new(WebShell { fig, bridge, collab, reported: (String::new(), None), reported_select: None, handoff }))
                 }),
             )
             .await;
@@ -97,14 +98,30 @@ struct WebShell {
     reported: (String, Option<bool>),
     /// The `oneos.id` of the single selected layer the host was last told of (`craft:select`), "" for none.
     reported_select: Option<String>,
+    /// The progressive open's hand-over to the host (`craft:opened`, the first view's place, `craft:viewed`), when framed by it.
+    handoff: Option<(crate::host::Bridge, crate::handoff::Handoff<Option<u64>>)>,
 }
 
 impl eframe::App for WebShell {
     // `FigApp::ui` runs its own per-frame logic first (fonts, theme), like the desktop app.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some((bridge, handoff)) = self.handoff.as_mut() {
+            handoff.before(bridge, self.fig.session.ds().ok().map(|d| d.uid));
+        }
         self.host_events(ui.ctx());
         self.fig.ui(ui);
         self.after_frame();
+        if let Some((bridge, handoff)) = self.handoff.as_mut() {
+            let session = &mut self.fig.session;
+            let shown = session.ds().ok().map(|d| d.uid);
+            if handoff.after(bridge, shown, |view| {
+                if let Err(e) = session.open_at_first_view(&view.selection, view.x_fraction(), view.y_fraction()) {
+                    log::warn!("the first view's place was not applied: {e}");
+                }
+            }) {
+                ui.ctx().request_repaint();
+            }
+        }
     }
 }
 
