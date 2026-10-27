@@ -16,8 +16,13 @@ fn err(e: impl std::fmt::Display) -> JsError {
 }
 
 fn batches_json(batches: &[Batch]) -> String {
-    Value::Array(batches.iter().map(|b| json!({"seq": b.seq, "ops": b.ops, "label": b.label, "undo": if b.join { "join" } else { "step" }, "seed": b.seed})).collect())
-        .to_string()
+    Value::Array(
+        batches
+            .iter()
+            .map(|b| json!({"seq": b.seq, "ops": b.ops, "label": b.label, "undo": if b.join { "join" } else { "step" }, "seed": b.seed}))
+            .collect(),
+    )
+    .to_string()
 }
 
 #[wasm_bindgen]
@@ -57,6 +62,12 @@ impl Window {
     pub fn command_batch(&mut self, params_json: &str) -> Result<String, JsError> {
         let params: Value = serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("params: {e}")))?;
         self.session.run_command_batch(&params).map(|v| v.to_string()).map_err(|e| JsError::new(&e))
+    }
+
+    /// The host states the theme's tokens (what a `craft:command {method: "constrain.set", params: {tokens}}` does); `null` lifts them.
+    pub fn constrain(&mut self, tokens_json: &str) -> Result<String, JsError> {
+        let tokens: Value = serde_json::from_str(tokens_json).map_err(|e| JsError::new(&format!("tokens: {e}")))?;
+        self.session.set_compose_tokens(Some(&tokens)).map(|v| v.to_string()).map_err(|e| JsError::new(&e))
     }
 
     /// The seed batches for the opened design (an array of `{seq, ops, label, undo, seed}`).
