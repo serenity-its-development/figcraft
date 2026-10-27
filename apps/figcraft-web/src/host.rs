@@ -130,6 +130,16 @@ impl Bridge {
         self.send(&[("type", "craft:dirty".into()), ("session", session.as_str().into()), ("dirty", dirty.into())])
     }
 
+    /// `craft:select {session, node}`: the single selected layer is the compose node `node` ("" when none, or not a compose layer),
+    /// so the host opens that node's OneOS properties panel (forms, lists, bindings, ratios: what the canvas cannot edit).
+    pub fn post_select(&self, node: &str) -> bool {
+        let session = self.shared.borrow().opened.session.clone();
+        if session.is_empty() {
+            return false;
+        }
+        self.send(&[("type", "craft:select".into()), ("session", session.as_str().into()), ("node", node.into())])
+    }
+
     /// Send a live-editing frame: `craft:crdt:<kind>` with `body`'s members beside the session.
     pub fn post_crdt(&self, kind: &str, body: &serde_json::Value) {
         let session = self.shared.borrow().opened.session.clone();

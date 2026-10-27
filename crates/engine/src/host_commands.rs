@@ -122,6 +122,8 @@ pub fn allowed() -> Vec<&'static str> {
 }
 
 const MAX_STEPS: usize = 50;
+/// The host drawing a whole page (a trusted run) may state more: a page of 200 layers is some 400 steps.
+const MAX_TRUSTED_STEPS: usize = 4000;
 const MAX_LABEL: usize = 120;
 const MAX_INSPECT_DEPTH: usize = 8;
 const MAX_RENDER_SIDE: f64 = 1600.0;
@@ -148,8 +150,9 @@ impl Session {
         if steps.is_empty() {
             return Err("run-empty: a run states at least one command".into());
         }
-        if steps.len() > MAX_STEPS {
-            return Err(format!("run-too-long: a run is at most {MAX_STEPS} steps"));
+        let max = if params.get("trusted").and_then(Value::as_bool) == Some(true) { MAX_TRUSTED_STEPS } else { MAX_STEPS };
+        if steps.len() > max {
+            return Err(format!("run-too-long: a run is at most {max} steps"));
         }
         // Judge the whole run first; nothing has run when one id is outside the list.
         let mut named = Vec::with_capacity(steps.len());

@@ -65,7 +65,7 @@ pub fn start() {
                     if let Some(b) = &bridge {
                         b.post_ready();
                     }
-                    Ok(Box::new(WebShell { fig, bridge, collab, reported: (String::new(), None) }))
+                    Ok(Box::new(WebShell { fig, bridge, collab, reported: (String::new(), None), reported_select: None }))
                 }),
             )
             .await;
@@ -95,6 +95,8 @@ struct WebShell {
     collab: Option<crate::collab::Collab>,
     /// The last (session, dirty) the host was told: a new open starts again.
     reported: (String, Option<bool>),
+    /// The `oneos.id` of the single selected layer the host was last told of (`craft:select`), "" for none.
+    reported_select: Option<String>,
 }
 
 impl eframe::App for WebShell {
@@ -115,7 +117,9 @@ impl WebShell {
                 crate::host::Event::Opened(opened, bytes) => self.open_host_file(&opened, &bytes),
                 crate::host::Event::Command { id, method, params } => {
                     let outcome = if method == "command.batch" {
-                        if bridge.opened().read_only {
+                        // A view-only window still DRAWS the page the host states (a trusted run: the host's own bridge, nothing is saved or
+                        // sent to the room from a read-only window); the assistant's runs are refused.
+                        if bridge.opened().read_only && params.get("trusted").and_then(serde_json::Value::as_bool) != Some(true) {
                             Err("read-only: this design is open to view, so a run cannot change it".to_string())
                         } else {
                             self.fig.session.run_command_batch(&params)
@@ -147,7 +151,9 @@ impl WebShell {
         session.collab_undo = false;
         session.collab_undo_requests.clear();
         let params = serde_json::json!({"data": data, "name": opened.name});
-        match session.execute("file.open", &params) {
+        // No bytes: a Pages & apps page, which the host draws from its compose draft by commands (it saves no .figcraft).
+        let opening = if bytes.is_empty() { session.execute("file.new", &serde_json::json!({"name": opened.name})) } else { session.execute("file.open", &params) };
+        match opening {
             Ok(_) => {
                 if let Err(e) = session.bind_host_name(None, &opened.name) {
                     log::error!("{e}");
@@ -179,6 +185,12 @@ impl WebShell {
         }
         if self.reported.0 != session {
             self.reported = (session.clone(), None);
+            self.reported_select = None;
+        }
+        // A compose-bound layer selected (or a double-click's selection) opens its OneOS properties panel in the host.
+        let selected = self.fig.session.selected_oneos_id();
+        if self.reported_select.as_deref() != Some(selected.as_str()) && bridge.post_select(&selected) {
+            self.reported_select = Some(selected);
         }
         let dirty = self.fig.session.host_dirty();
         if self.reported.1 != Some(dirty) && bridge.post_dirty(dirty) {

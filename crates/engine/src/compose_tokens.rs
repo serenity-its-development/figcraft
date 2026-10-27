@@ -206,6 +206,15 @@ impl Session {
         Err(EngineError::Other(format!("token-refused: {}", problems.join("; "))))
     }
 
+    /// The `oneos.id` of the one selected layer, or "" (none selected, several, or a layer the bridge did not draw).
+    pub fn selected_oneos_id(&self) -> String {
+        let Ok(ds) = self.ds() else { return String::new() };
+        match ds.selection.as_slice() {
+            [one] => ds.doc.node(*one).and_then(|n| n.plugin_data.get("oneos.id")).cloned().unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
     /// `bind.field {id, prop, field, scope?}`: record that a layer's property is fed by a OneOS field. The bridge turns it into the
     /// page's template (`{$record.x}`, `{$row.x}`) and the compose validator judges it, so a field compose cannot hold is refused.
     pub(crate) fn bind_field(&mut self, args: &Value) -> std::result::Result<Value, String> {
