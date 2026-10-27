@@ -28,6 +28,9 @@
 mod query;
 #[cfg(test)]
 mod query_tests;
+#[cfg(any(target_arch = "wasm32", test))]
+mod handoff;
+
 #[cfg(target_arch = "wasm32")]
 mod collab;
 #[cfg(target_arch = "wasm32")]
