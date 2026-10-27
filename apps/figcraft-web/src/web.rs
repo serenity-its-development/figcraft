@@ -120,6 +120,9 @@ impl WebShell {
                         } else {
                             self.fig.session.run_command_batch(&params)
                         }
+                    } else if method == "constrain.set" {
+                        // The host states the theme's tokens for a compose-bound document (null lifts the constraint).
+                        self.fig.session.set_compose_tokens(params.get("tokens"))
                     } else {
                         Err(format!("unknown-method: this editor does not take `{method}`"))
                     };

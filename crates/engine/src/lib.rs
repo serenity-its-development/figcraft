@@ -23,6 +23,7 @@ pub mod codegen;
 pub mod collab;
 pub mod component_codegen;
 pub mod components;
+pub mod compose_tokens;
 pub mod datafill;
 pub mod dev_measurements;
 pub mod dev_resources;
@@ -821,6 +822,13 @@ pub struct Session {
     /// pointer is over the canvas (page coordinates, set by the window) for the caller to send.
     pub room_peers: Vec<host_live::RoomPeer>,
     pub room_pointer: Option<(f64, f64)>,
+    /// OneOS Pages & apps: the theme's tokens once the host has stated them ([`Session::set_compose_tokens`]); while set, a layer on a
+    /// compose page frame holds tokens only and an edit that leaves a raw value is refused by name and rolled back.
+    pub compose_tokens: Option<compose_tokens::Tokens>,
+    /// The run in progress is the host's own (its bridge writing the `oneos.*` sidecar), not the assistant's.
+    pub host_trusted: bool,
+    /// Inside a `command.batch` the token check waits for the run end state (a layer is born with defaults the run sets right).
+    pub defer_token_check: bool,
 }
 
 impl Default for Session {
@@ -872,6 +880,9 @@ impl Session {
             collab_undo_requests: Vec::new(),
             room_peers: Vec::new(),
             room_pointer: None,
+            compose_tokens: None,
+            host_trusted: false,
+            defer_token_check: false,
         }
     }
 
@@ -992,7 +1003,8 @@ impl Session {
             .and_then(|v| self.check_instance_structure(id, &before).map(|()| v))
             .and_then(|v| self.check_preview(id, &before).map(|()| v))
             .and_then(|v| self.check_live_access(id, &before).map(|()| v))
-            .and_then(|v| self.check_finite_geometry(id, &before).map(|()| v));
+            .and_then(|v| self.check_finite_geometry(id, &before).map(|()| v))
+            .and_then(|v| self.check_compose_tokens(id, &before).map(|()| v));
         match &result {
             Ok(_) => {
                 self.after_command(spec, before);
@@ -1683,6 +1695,8 @@ mod component_codegen_tests;
 mod components_behaviour_tests;
 #[cfg(test)]
 mod components_scale_tests;
+#[cfg(test)]
+mod compose_tokens_tests;
 #[cfg(test)]
 mod convert_container_tests;
 #[cfg(test)]

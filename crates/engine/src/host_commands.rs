@@ -111,6 +111,9 @@ pub const ARGUMENT_COMMANDS: &[&str] = &[
     "inspect",
     // Read-only: the current page (or `id`, or with {selection: true} what is selected) as a PNG, base64, at most 1600 pixels wide.
     "render",
+    // {id, prop, field, scope?}: a layer's property is fed by a OneOS field (`design.bind.field`). Typed, so the oneos.* sidecar is
+    // never written by a free `node.set` on a compose page.
+    "bind.field",
 ];
 
 /// Every command id a run may name, in the order the host's registry declares them.
@@ -157,33 +160,78 @@ impl Session {
             }
             let args = step.get("args").cloned().unwrap_or_else(|| json!({}));
             if let Some(k) = forbidden_arg(&args) {
-                return Err(format!("argument-not-allowed: step '{name}' names '{k}', and a run does not reach files or addresses -- nothing was run"));
+                return Err(format!(
+                    "argument-not-allowed: step '{name}' names '{k}', and a run does not reach files or addresses -- nothing was run"
+                ));
             }
             named.push((name, args));
         }
         self.ds().map_err(|_| "no-document: no design file is open in this window".to_string())?;
         let depth = self.undo_depth().0;
         let label = if label.is_empty() { "Assistant" } else { label };
+        // `trusted`: the host's own bridge (it writes the oneos.* sidecar); `dryRun`: run, read the compose pages back, and take it
+        // ALL back (nothing lands, nothing reaches the room) so the host can judge the result with the compose validator first.
+        let trusted = params.get("trusted").and_then(Value::as_bool) == Some(true);
+        let dry = params.get("dryRun").and_then(Value::as_bool) == Some(true);
+        let snapshot = self.ds().ok().map(|d| (d.doc.clone(), d.selection.clone(), d.page, d.uid));
+        let was_trusted = std::mem::replace(&mut self.host_trusted, trusted);
+        let mut tree: Option<Value> = None;
         // The engine's own grouping: the steps push no undo steps of their own, the run is ONE step named `label`, and a failing
         // step leaves the document, selection, page and redo steps as they were.
         let outcome = self.grouped(label, |s| {
             let mut results: Vec<Value> = Vec::with_capacity(named.len());
+            s.defer_token_check = true;
             for (i, (name, args)) in named.iter().enumerate() {
-                let result = s
-                    .run_step(&results, i, name, args)
-                    .map_err(|e| crate::EngineError::Other(format!("step-failed: step {} ({name}): {e} -- nothing was changed", i + 1)))?;
+                let result = s.run_step(&results, i, name, args).map_err(|e| {
+                    s.defer_token_check = false;
+                    crate::EngineError::Other(format!("step-failed: step {} ({name}): {e} -- nothing was changed", i + 1))
+                })?;
                 results.push(json!({ "name": name, "result": result }));
+            }
+            s.defer_token_check = false;
+            // Tokens are judged on the run's END state: a frame is born with default values the run's later steps set right.
+            s.check_compose_tokens("command.batch", &snapshot)?;
+            if dry {
+                tree = Some(s.compose_pages_json());
+                return Err(crate::EngineError::Other("dry-run".into()));
             }
             Ok(results)
         });
+        self.host_trusted = was_trusted;
+        self.defer_token_check = false;
+        if dry {
+            return match (outcome, tree) {
+                (Err(crate::EngineError::Other(m)), Some(t)) if m == "dry-run" => Ok(json!({ "dryRun": true, "pages": t })),
+                (Err(e), _) => Err(e.to_string()),
+                (Ok(_), _) => Err("dry-run: the run was not taken back".into()),
+            };
+        }
         let results = outcome.map_err(|e| e.to_string())?;
         Ok(json!({ "steps": results, "undoStep": self.undo_depth().0 > depth }))
+    }
+
+    /// Every compose page frame on the document's pages as the `inspect` tree (so the host can read the pages back).
+    fn compose_pages_json(&self) -> Value {
+        let Ok(doc) = self.doc() else { return Value::Array(vec![]) };
+        let mut out = Vec::new();
+        for page in &doc.pages {
+            for c in doc.node(*page).map(|p| p.children.clone()).unwrap_or_default() {
+                if doc.node(c).is_some_and(|n| n.plugin_data.contains_key(crate::compose_tokens::PAGE_KEY)) {
+                    out.push(crate::inspect::node_json(doc, c, MAX_INSPECT_DEPTH));
+                }
+            }
+        }
+        Value::Array(out)
     }
 
     /// One step: `{"$step": n}` in its arguments names the result of the earlier step n (the layer it made).
     fn run_step(&mut self, results: &[Value], step: usize, name: &str, args: &Value) -> Result<Value, String> {
         let earlier: Vec<Value> = results.iter().map(|r| r["result"].clone()).collect();
         match name {
+            "bind.field" => {
+                let args = crate::resolve_step_refs(args, &earlier, step, 0).map_err(|e| e.to_string())?;
+                self.bind_field(&args)
+            }
             "select.nodes" | "inspect" | "render" => {
                 let args = crate::resolve_step_refs(args, &earlier, step, 0).map_err(|e| e.to_string())?;
                 match name {
@@ -204,7 +252,10 @@ impl Session {
             ids.extend(doc.subtree(page).into_iter().filter(|i| *i != page).map(|i| i.0));
         }
         for id in args.get("ids").and_then(Value::as_array).into_iter().flatten() {
-            let n = id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse::<figcraft_doc::NodeId>().ok().map(|n| n.0))).ok_or("ids: layer ids are numbers")?;
+            let n = id
+                .as_u64()
+                .or_else(|| id.as_str().and_then(|s| s.parse::<figcraft_doc::NodeId>().ok().map(|n| n.0)))
+                .ok_or("ids: layer ids are numbers")?;
             if !doc.contains(figcraft_doc::NodeId(n)) {
                 return Err(format!("no layer {n}"));
             }
@@ -249,7 +300,11 @@ impl Session {
             None => {
                 // The page, unless the run asks for what is selected.
                 let sel = self.selection();
-                if args.get("selection").and_then(Value::as_bool) == Some(true) && !sel.is_empty() { sel } else { doc.node(page).map(|n| n.children.clone()).unwrap_or_default() }
+                if args.get("selection").and_then(Value::as_bool) == Some(true) && !sel.is_empty() {
+                    sel
+                } else {
+                    doc.node(page).map(|n| n.children.clone()).unwrap_or_default()
+                }
             }
         };
         if ids.is_empty() {
@@ -277,11 +332,30 @@ mod tests {
         for id in ASSISTANT_COMMANDS {
             assert!(known.iter().any(|k| k == id), "{id} is not a registry command");
         }
-        for bad in ["file.save", "file.saveAs", "file.open", "file.export", "file.import", "file.placeImage", "edit.undo", "edit.redo", "proto.present", "library.publishToServer"] {
+        for bad in [
+            "file.save",
+            "file.saveAs",
+            "file.open",
+            "file.export",
+            "file.import",
+            "file.placeImage",
+            "edit.undo",
+            "edit.redo",
+            "proto.present",
+            "library.publishToServer",
+        ] {
             assert!(!allowed().contains(&bad), "{bad} must not be allowed");
         }
         for id in allowed() {
-            assert!(!id.contains("file") && !id.contains("path") && !id.contains("open") && !id.contains("save") && !id.contains("export") && !id.contains("import"), "{id}");
+            assert!(
+                !id.contains("file")
+                    && !id.contains("path")
+                    && !id.contains("open")
+                    && !id.contains("save")
+                    && !id.contains("export")
+                    && !id.contains("import"),
+                "{id}"
+            );
         }
     }
 
@@ -291,7 +365,9 @@ mod tests {
         let before = s.undo_depth();
         let refused = s.run_command_batch(&json!({"steps": [{"name": "frame.create"}, {"name": "file.save"}]})).expect_err("outside the list");
         assert!(refused.starts_with("command-not-allowed"), "{refused}");
-        let path = s.run_command_batch(&json!({"steps": [{"name": "frame.create", "args": {"props": {"imagePath": 1, "x": {"path": "/etc/passwd"}}}}]})).expect_err("path");
+        let path = s
+            .run_command_batch(&json!({"steps": [{"name": "frame.create", "args": {"props": {"imagePath": 1, "x": {"path": "/etc/passwd"}}}}]}))
+            .expect_err("path");
         assert!(path.starts_with("argument-not-allowed"), "{path}");
         assert_eq!(s.undo_depth(), before, "nothing ran");
     }
@@ -321,7 +397,9 @@ mod tests {
     fn a_failing_step_takes_back_the_steps_before_it() {
         let mut s = session();
         let count = s.doc().unwrap().node_count();
-        let e = s.run_command_batch(&json!({"steps": [{"name": "frame.create"}, {"name": "node.set", "args": {"id": 999_999_999, "props": {"x": 1}}}]})).expect_err("fails");
+        let e = s
+            .run_command_batch(&json!({"steps": [{"name": "frame.create"}, {"name": "node.set", "args": {"id": 999_999_999, "props": {"x": 1}}}]}))
+            .expect_err("fails");
         assert!(e.starts_with("step-failed"), "{e}");
         assert_eq!(s.doc().unwrap().node_count(), count);
     }
@@ -329,8 +407,12 @@ mod tests {
     #[test]
     fn layers_are_selected_by_name_and_rendered() {
         let mut s = session();
-        s.run_command_batch(&json!({"steps": [{"name": "frame.create", "args": {"x": 0, "y": 0, "width": 200, "height": 100, "name": "Card"}}]})).unwrap();
-        s.run_command_batch(&json!({"steps": [{"name": "select.nodes", "args": {"names": ["Card"]}}, {"name": "fill.set", "args": {"color": "#FF0000"}}]})).unwrap();
+        s.run_command_batch(&json!({"steps": [{"name": "frame.create", "args": {"x": 0, "y": 0, "width": 200, "height": 100, "name": "Card"}}]}))
+            .unwrap();
+        s.run_command_batch(
+            &json!({"steps": [{"name": "select.nodes", "args": {"names": ["Card"]}}, {"name": "fill.set", "args": {"color": "#FF0000"}}]}),
+        )
+        .unwrap();
         let e = s.run_command_batch(&json!({"steps": [{"name": "select.nodes", "args": {"names": ["No such layer"]}}]})).expect_err("unknown name");
         assert!(e.contains("no layer named"), "{e}");
         let r = s.run_command_batch(&json!({"steps": [{"name": "render"}]})).unwrap();
