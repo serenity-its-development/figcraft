@@ -141,19 +141,35 @@ impl Tokens {
     }
 }
 
-/// Is this layer, or one above it, a compose page frame?
-fn on_page(doc: &Document, mut id: NodeId) -> bool {
+/// The compose page frame this layer is, or sits beneath.
+fn page_frame(doc: &Document, mut id: NodeId) -> Option<NodeId> {
     for _ in 0..64 {
-        let Some(n) = doc.node(id) else { return false };
+        let n = doc.node(id)?;
         if n.plugin_data.contains_key(PAGE_KEY) {
-            return true;
+            return Some(id);
         }
-        match n.parent {
-            Some(p) => id = p,
-            None => return false,
-        }
+        id = n.parent?;
     }
-    false
+    None
+}
+
+/// Is this layer, or one above it, a compose page frame?
+fn on_page(doc: &Document, id: NodeId) -> bool {
+    page_frame(doc, id).is_some()
+}
+
+/// The blocks the canvas draws and edits itself; `section.insert` places only the others (locked OneOS blocks).
+const CANVAS_BLOCKS: &[&str] = &["section", "stack", "grid", "columns", "split", "card", "hero", "heading", "badge", "button", "divider", "spacer", "text"];
+/// What a block's node may state (`kids` are layers inside the placeholder, drawn after the insert).
+const NODE_KEYS: &[&str] = &["c", "p", "bind", "show", "on", "bp"];
+const MAX_NODE_BYTES: usize = 64 * 1024;
+
+fn token_px(t: &[(String, f64)], name: &str, fallback: f64) -> f64 {
+    t.iter().find(|(k, _)| k == name).or_else(|| t.iter().find(|(_, v)| *v > 0.0)).map_or(fallback, |(_, v)| *v)
+}
+
+fn role(t: &[(String, String)], name: &str, fallback: &str) -> String {
+    t.iter().find(|(k, _)| k == name).or_else(|| t.first()).map_or_else(|| fallback.to_string(), |(_, v)| v.clone())
 }
 
 impl Session {
@@ -206,6 +222,50 @@ impl Session {
         Err(EngineError::Other(format!("token-refused: {}", problems.join("; "))))
     }
 
+    /// The scale a numeric field of `ids` is held to, or `None` when the layers are not (all) on a compose page or no tokens are stated:
+    /// the editor OFFERS these (name, px) instead of a free number, so a person never meets a refusal by doing the natural thing.
+    /// Spacing for gaps and padding, radii for corners, the type scale for a font size; zero (`none`) is always on the spacing and radius scales.
+    pub fn compose_scale(&self, ids: &[NodeId], field: &str) -> Option<Vec<(String, f64)>> {
+        let t = self.compose_tokens.as_ref()?;
+        if !self.all_on_page(ids) {
+            return None;
+        }
+        let with_none = |v: &[(String, f64)]| {
+            let mut out = v.to_vec();
+            if !out.iter().any(|(_, x)| *x == 0.0) {
+                out.insert(0, ("none".into(), 0.0));
+            }
+            out
+        };
+        match field {
+            "gap" | "rowGap" | "crossGap" | "counterAxisSpacing" | "padding" | "paddingTop" | "paddingRight" | "paddingBottom" | "paddingLeft"
+            | "paddingHorizontal" | "paddingVertical" => Some(with_none(&t.spacing)),
+            "cornerRadius" | "topLeftRadius" | "topRightRadius" | "bottomLeftRadius" | "bottomRightRadius" => Some(with_none(&t.radii)),
+            "fontSize" => Some(t.type_sizes.clone()),
+            _ => None,
+        }
+    }
+
+    /// The theme's colour roles (role, `#RRGGBB`) a fill, stroke or text colour of `ids` is chosen from, or `None` when the layers are not
+    /// (all) on a compose page or no tokens are stated.
+    pub fn compose_colors(&self, ids: &[NodeId]) -> Option<Vec<(String, String)>> {
+        let t = self.compose_tokens.as_ref()?;
+        self.all_on_page(ids).then(|| t.colors.clone())
+    }
+
+    /// A dragged value snapped to the nearest token of the field's scale (a handle never lands off the scale); unchanged off a page.
+    pub fn compose_snap(&self, ids: &[NodeId], field: &str, v: f64) -> f64 {
+        match self.compose_scale(ids, field) {
+            Some(scale) => scale.iter().map(|(_, x)| *x).min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs())).unwrap_or(v),
+            None => v,
+        }
+    }
+
+    fn all_on_page(&self, ids: &[NodeId]) -> bool {
+        let Ok(doc) = self.doc() else { return false };
+        !ids.is_empty() && ids.iter().all(|i| on_page(doc, *i))
+    }
+
     /// The `oneos.id` of the one selected layer, or "" (none selected, several, or a layer the bridge did not draw).
     pub fn selected_oneos_id(&self) -> String {
         let Ok(ds) = self.ds() else { return String::new() };
@@ -213,6 +273,88 @@ impl Session {
             [one] => ds.doc.node(*one).and_then(|n| n.plugin_data.get("oneos.id")).cloned().unwrap_or_default(),
             _ => String::new(),
         }
+    }
+
+    /// `section.insert {node, parent, index?, name?}`: place a locked OneOS block (a form, a live list or table, a metric, a menu ...) on the
+    /// Expanded frame of a compose page as a LOCKED component instance. `node` is the compose node as JSON text, `{c, p, bind?, show?, on?}`:
+    /// the block's properties live in the OneOS panel, never on the canvas, and the compose validator judges them (an AI run is tried
+    /// first and refused with the validator's message). The sidecar is written here, by the host's typed command, never by `node.set`.
+    pub(crate) fn section_insert(&mut self, args: &Value) -> std::result::Result<Value, String> {
+        let node: Value = match args.get("node") {
+            Some(Value::String(s)) if s.len() <= MAX_NODE_BYTES => serde_json::from_str(s).map_err(|e| format!("section.insert: `node` is the block as JSON text ({e})"))?,
+            Some(Value::String(_)) => return Err(format!("section.insert: `node` is at most {MAX_NODE_BYTES} bytes")),
+            Some(v @ Value::Object(_)) if v.to_string().len() <= MAX_NODE_BYTES => v.clone(),
+            _ => return Err("section.insert: `node` is the compose block {c, p, bind?, show?, on?} as JSON text".into()),
+        };
+        let obj = node.as_object().ok_or("section.insert: `node` is a JSON object {c, p, ...}")?;
+        let c = obj.get("c").and_then(Value::as_str).unwrap_or("");
+        if c.is_empty() || c.len() > 32 || !c.starts_with(|b: char| b.is_ascii_lowercase()) || !c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(format!("section.insert: `node.c` is a compose block name like form, list, table or metric (got '{c}')"));
+        }
+        if CANVAS_BLOCKS.contains(&c) {
+            return Err(format!("section.insert: a {c} is drawn and edited on the canvas (frame.create, text.create, node.set), not inserted; section.insert places a locked OneOS block"));
+        }
+        if let Some(k) = obj.keys().find(|k| !NODE_KEYS.contains(&k.as_str())) {
+            return Err(format!("section.insert: a block states c, p, bind, show, on and bp, not '{k}' (children are layers inside the placeholder)"));
+        }
+        if obj.get("p").is_some_and(|p| !p.is_object()) {
+            return Err("section.insert: `node.p` is an object of the block's properties".into());
+        }
+        let parent = args.get("parent").and_then(Value::as_u64).ok_or("section.insert: `parent` is the layer to place the block in")?;
+        let (oneos_id, geometry_w) = {
+            let doc = self.doc().map_err(|e| e.to_string())?;
+            if !doc.contains(NodeId(parent)) {
+                return Err(format!("no layer {parent}"));
+            }
+            let Some(frame) = page_frame(doc, NodeId(parent)) else {
+                return Err(format!("section.insert: layer {parent} is not on a compose page; place the block inside a page's layers"));
+            };
+            let class = doc.node(frame).and_then(|f| f.plugin_data.get("oneos.cls")).map_or("expanded", String::as_str);
+            if class != "expanded" {
+                return Err(format!("section.insert: blocks are placed on the Expanded frame (this is the {class} frame); the other sizes follow it"));
+            }
+            let taken: std::collections::HashSet<&str> =
+                doc.nodes().filter_map(|n| n.plugin_data.get("oneos.id")).map(String::as_str).collect();
+            let stem: String = c.to_ascii_lowercase().chars().take(26).collect();
+            let id = (1..10_000).map(|i| format!("{stem}-{i}")).find(|i| !taken.contains(i.as_str())).ok_or("section.insert: no free block id")?;
+            (id, 500.0)
+        };
+        let (pad, gap, size, fill, edge, ink) = match &self.compose_tokens {
+            Some(t) => (
+                token_px(&t.spacing, "md", 16.0),
+                token_px(&t.spacing, "none", 0.0),
+                token_px(&t.type_sizes, "caption", 13.0),
+                role(&t.colors, "placeholder", "#ECECEC"),
+                role(&t.colors, "placeholderEdge", "#9E9E9E"),
+                role(&t.colors, "placeholderText", "#666666"),
+            ),
+            None => (16.0, 0.0, 13.0, "#ECECEC".into(), "#9E9E9E".into(), "#666666".into()),
+        };
+        let title = obj.get("p").and_then(|p| p.get("title").or_else(|| p.get("label"))).and_then(Value::as_str).filter(|t| !t.is_empty() && t.len() <= 60);
+        let shown = title.map_or_else(|| c.to_string(), |t| format!("{c}: {t}"));
+        let name = args.get("name").and_then(Value::as_str).filter(|n| !n.is_empty() && n.len() <= 80).unwrap_or(&oneos_id).to_string();
+        let was = std::mem::replace(&mut self.host_trusted, true);
+        let made = self.execute(
+            "node.create",
+            &json!({"type": "frame", "name": name, "parent": parent, "select": true, "x": 0, "y": 0, "width": geometry_w, "height": 120,
+                "props": {"layout": "vertical", "gap": gap, "padding": pad, "sizingH": "fill", "sizingV": "fixed", "fill": fill, "stroke": edge, "locked": true,
+                    "pluginData": {"oneos.id": oneos_id, "oneos.node": node.to_string(), "oneos.locked": "1"}}}),
+        );
+        let made = made.and_then(|r| {
+            let id = r.get("id").and_then(Value::as_u64).ok_or_else(|| EngineError::Other("section.insert: the layer was not made".into()))?;
+            self.execute(
+                "node.create",
+                &json!({"type": "text", "name": "locked label", "parent": id, "select": false, "text": format!("{shown} (edit in the panel)"),
+                    "props": {"fontSize": size, "fill": ink, "sizingH": "fill", "textAutoResize": "height", "pluginData": {"oneos.decor": "1"}}}),
+            )?;
+            if let Some(index) = args.get("index").and_then(Value::as_u64) {
+                self.execute("node.reorder", &json!({"id": id, "index": index}))?;
+            }
+            Ok(id)
+        });
+        self.host_trusted = was;
+        let id = made.map_err(|e| e.to_string())?;
+        Ok(json!({"id": id, "oneosId": oneos_id, "c": c}))
     }
 
     /// `bind.field {id, prop, field, scope?}`: record that a layer's property is fed by a OneOS field. The bridge turns it into the

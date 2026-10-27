@@ -9,7 +9,7 @@ description = "FigCraft MCP server: JSON-RPC 2.0 over stdio, driving a headless 
 workspace = true
 
 [dependencies]
-figcraft-engine = { workspace = true }
+figcraft-engine = { workspace = true, features = ["pdf"] }
 figcraft-collab-net = { workspace = true }
 figcraft-doc = { workspace = true }
 figcraft-geom = { workspace = true }

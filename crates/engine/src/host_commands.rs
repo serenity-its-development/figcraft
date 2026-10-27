@@ -114,6 +114,10 @@ pub const ARGUMENT_COMMANDS: &[&str] = &[
     // {id, prop, field, scope?}: a layer's property is fed by a OneOS field (`design.bind.field`). Typed, so the oneos.* sidecar is
     // never written by a free `node.set` on a compose page.
     "bind.field",
+    // {node, parent, index?, name?}: a locked OneOS block (form, live list or table, metric ...) placed on the Expanded frame of a compose
+    // page as a locked component instance; `node` is the compose node as JSON text and the compose validator judges it
+    // (`design.section.insert`). Its properties are edited in the OneOS panel, never on the canvas.
+    "section.insert",
 ];
 
 /// Every command id a run may name, in the order the host's registry declares them.
@@ -234,6 +238,10 @@ impl Session {
             "bind.field" => {
                 let args = crate::resolve_step_refs(args, &earlier, step, 0).map_err(|e| e.to_string())?;
                 self.bind_field(&args)
+            }
+            "section.insert" => {
+                let args = crate::resolve_step_refs(args, &earlier, step, 0).map_err(|e| e.to_string())?;
+                self.section_insert(&args)
             }
             "select.nodes" | "inspect" | "render" => {
                 let args = crate::resolve_step_refs(args, &earlier, step, 0).map_err(|e| e.to_string())?;

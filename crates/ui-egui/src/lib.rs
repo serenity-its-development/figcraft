@@ -60,6 +60,7 @@ pub mod shortcuts_panel;
 pub mod style_picker;
 pub mod tabs;
 pub mod theme;
+pub mod token_ui;
 pub mod toolbar;
 pub mod typography;
 pub mod ui_scale;

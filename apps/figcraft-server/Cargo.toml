@@ -41,6 +41,6 @@ rustix = { version = "1", default-features = false, features = ["std", "fs"] }
 # Crafting hostile archives (zip bombs) in tests.
 zip = { workspace = true }
 wat = { workspace = true }
-figcraft-engine = { workspace = true }
+figcraft-engine = { workspace = true, features = ["pdf"] }
 figcraft-doc = { workspace = true }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

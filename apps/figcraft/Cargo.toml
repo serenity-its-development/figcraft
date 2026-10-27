@@ -11,7 +11,7 @@ default-run = "figcraft"
 workspace = true
 
 [dependencies]
-figcraft-engine = { workspace = true }
+figcraft-engine = { workspace = true, features = ["pdf"] }
 figcraft-ui-egui = { workspace = true }
 figcraft-collab-net = { workspace = true }
 figcraft-format = { workspace = true }

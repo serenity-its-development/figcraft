@@ -232,7 +232,10 @@ fn font_rows(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], styles: &[TextStyle]
         let size = uniform(styles, |s| s.font_size);
         ui.spacing_mut().item_spacing.x = 0.0;
         // The whole layer's size can follow a variable; a selected range just takes a value.
-        let e = if editing {
+        let type_scale = app.session.compose_scale(ids, "fontSize");
+        let e = if let Some(scale) = &type_scale {
+            crate::token_ui::scale_field(ui, scale, size, half - 20.0, &Lead::None, tr("Mixed")).map(FieldEdit::Set)
+        } else if editing {
             widgets::number_field(ui, Id::new("ty_size"), Lead::None, size, "", half - 20.0, 1.0)
         } else {
             crate::variable_ui::number_field(app, ui, ids, "fontSize", Id::new("ty_size"), Lead::None, size, "", half - 20.0)
@@ -249,7 +252,8 @@ fn font_rows(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], styles: &[TextStyle]
         let more = icons::button(ui, Icon::Chevron, 20.0, false, tr("Font size"));
         menu_popup(&more).width(90.0).show(|ui| {
             egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                for v in SIZES {
+                let sizes: Vec<f64> = type_scale.as_ref().map_or_else(|| SIZES.to_vec(), |s| s.iter().map(|(_, v)| *v).collect());
+                for v in sizes {
                     let mark = if size == Some(v) { "✓ " } else { "   " };
                     if menu_item(ui, &format!("{mark}{}", trim_num(v)), "") {
                         apply_style(app, "fontSize", json!(v));

@@ -37,8 +37,21 @@ fn main() {
 fn locales() -> String {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
     println!("cargo::rerun-if-changed={}", dir.display());
-    let mut files: Vec<_> =
-        std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+    println!("cargo::rerun-if-env-changed=FIGCRAFT_LOCALES");
+    // OneOS: the browser build embeds English and the languages named in FIGCRAFT_LOCALES (comma-separated codes, "de,es,pt-BR"):
+    // every catalog is baked into the wasm's data (~2.5 MB of source), and a language left out falls back to English.
+    let only = std::env::var("FIGCRAFT_LOCALES").ok().map(|v| v.split(',').map(|c| c.trim().to_ascii_lowercase()).filter(|c| !c.is_empty()).collect::<Vec<_>>());
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .filter(|p| {
+            let code = p.file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            code == "en" || only.as_ref().is_none_or(|o| o.contains(&code))
+        })
+        .collect();
     // By code, so "es" comes before "es-419".
     files.sort_by_key(|p| (p.file_stem().is_none_or(|s| s != "en"), p.file_stem().map(ToOwned::to_owned)));
     let langs: Vec<_> = files
