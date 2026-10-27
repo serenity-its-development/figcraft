@@ -306,6 +306,16 @@ fn number_field_edit(
     suffix: &str,
 ) -> Option<Edit> {
     let name = app.session.doc().ok().and_then(|d| bound_name(d, ids, field));
+    // On a compose page the field OFFERS the theme's tokens (a spacing, radius or type scale) instead of a free number.
+    if name.is_none() {
+        if let Some(scale) = app.session.compose_scale(ids, field) {
+            let empty_text = match &empty {
+                Empty::Text(t) => (*t).to_string(),
+                Empty::Auto => tr("Auto").to_string(),
+            };
+            return crate::token_ui::scale_field(ui, &scale, value, width, &lead, &empty_text).map(|px| Edit::All(FieldEdit::Set(px)));
+        }
+    }
     let (edit, ev) = widgets::number_field_bindable(ui, id, lead, value, suffix, width, 1.0, Some(name.as_deref()), empty);
     handle(app, ui, ids, field, VariableType::Number, ev);
     edit

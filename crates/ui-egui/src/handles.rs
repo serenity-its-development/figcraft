@@ -550,7 +550,7 @@ fn apply(app: &mut FigApp, drag: &Drag, pos: Pos2, shift: bool) {
                 2 => start.y - pos.y,
                 _ => pos.x - start.x,
             }) / zoom;
-            let v = (value + d).round().max(0.0);
+            let v = app.session.compose_snap(&[*id], "padding", (value + d).round().max(0.0));
             let key = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].get(*side).copied().unwrap_or("paddingTop");
             // Shift drags both sides of the axis together.
             let props =
@@ -593,7 +593,7 @@ fn apply(app: &mut FigApp, drag: &Drag, pos: Pos2, shift: bool) {
         }
         Drag::Gap { id, start, value, vertical, key } => {
             let d = f64::from(if *vertical { pos.y - start.y } else { pos.x - start.x }) / zoom;
-            let v = (value + d).round().max(0.0);
+            let v = app.session.compose_snap(&[*id], key, (value + d).round().max(0.0));
             // Dragging an auto gap fixes it at what the drag makes of the distance it had.
             let mut props = json!({ *key: v });
             match (*key, app.session.doc().ok().and_then(|d| d.node(*id)).and_then(|n| n.layout.as_ref())) {

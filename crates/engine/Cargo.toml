@@ -8,6 +8,11 @@ description = "FigCraft engine: sessions, undo history, the command registry eve
 [lints]
 workspace = true
 
+[features]
+# PDF export (figcraft-pdf, krilla: ~1.5 MB of the browser build). On for every native app and the tests; the browser build (figcraft-web) leaves it out.
+default = ["pdf"]
+pdf = ["dep:figcraft-pdf"]
+
 [dependencies]
 figcraft-geom = { workspace = true }
 figcraft-color = { workspace = true }
@@ -20,7 +25,7 @@ figcraft-pathops = { workspace = true }
 figcraft-render = { workspace = true }
 figcraft-format = { workspace = true }
 figcraft-svg = { workspace = true }
-figcraft-pdf = { workspace = true }
+figcraft-pdf = { workspace = true, optional = true }
 craft-docpath = { workspace = true }
 figcraft-plugin = { workspace = true }
 serde = { workspace = true }

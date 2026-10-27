@@ -499,6 +499,37 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             if cresp.clicked() {
                 close_now = true;
             }
+            // On a compose page a colour is one of the theme's roles: they are offered, a free colour is not.
+            let page_ids: Vec<NodeId> = match &target {
+                PickerTarget::Paint { ids, .. } => ids.clone(),
+                PickerTarget::TextRange { id, .. } => vec![*id],
+                _ => vec![],
+            };
+            if let Some(roles) = app.session.compose_colors(&page_ids) {
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    widgets::label(ui, tr(crate::token_ui::roles_title()), t.text_tertiary);
+                });
+                let current = match &paint.kind {
+                    PaintKind::Solid { color } => Some(color.to_css_hex()),
+                    _ => None,
+                };
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(208.0);
+                        if let Some(hex) = crate::token_ui::role_swatches(ui, &roles, current.as_deref())
+                            && let Some(c) = Color::from_hex(&hex)
+                        {
+                            paint.kind = PaintKind::Solid { color: c.with_alpha(1.0) };
+                            paint.opacity = 1.0;
+                            write(app, &target, &paint, false);
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                return;
+            }
             // Paint type.
             if !matches!(
                 target,

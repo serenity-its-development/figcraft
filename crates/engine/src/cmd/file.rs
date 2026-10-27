@@ -1264,9 +1264,16 @@ fn export_layers(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A PDF with one page per group of layers (an sRGB document), titled after the file; `area`
 /// sizes a single page to that page area instead of the layers' bounds.
+#[cfg(feature = "pdf")]
 fn pdf_bytes(doc: &Document, groups: &[Vec<NodeId>], print: &PrintSettings, area: Option<figcraft_geom::Rect>) -> Result<Vec<u8>> {
     let opts = figcraft_pdf::PdfOptions { title: Some(doc.name.clone()), print: *print, area, ..Default::default() };
     figcraft_pdf::export_groups(doc, groups, &opts).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+/// The browser build leaves PDF export out (see the engine's `pdf` feature): it says so, by name.
+#[cfg(not(feature = "pdf"))]
+fn pdf_bytes(_doc: &Document, _groups: &[Vec<NodeId>], _print: &PrintSettings, _area: Option<figcraft_geom::Rect>) -> Result<Vec<u8>> {
+    Err(EngineError::Other("PDF export is not part of this build".into()))
 }
 
 /// Every top-level frame of `page` (reading order) as one PDF page each, and the page count.
